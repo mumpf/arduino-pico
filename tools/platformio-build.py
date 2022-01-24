@@ -34,6 +34,7 @@ env.Append(
     ASFLAGS=env.get("CCFLAGS", [])[:],
 
     CCFLAGS=[
+        "-Os",
         "-Werror=return-type",
         "-march=armv6-m",
         "-mcpu=cortex-m0plus",
@@ -49,7 +50,6 @@ env.Append(
     ],
 
     CXXFLAGS=[
-        "-Os",
         "-std=gnu++17",
         "-fno-exceptions",
         "-fno-rtti",
