@@ -86,12 +86,16 @@ env.Append(
 
     LIBSOURCE_DIRS=[os.path.join(FRAMEWORK_DIR, "libraries")],
 
-    LIBPATH=[
-        os.path.join(FRAMEWORK_DIR, "lib")
-    ],
+    # do **NOT** Add lib to LIBPATH, otherwise 
+    # erronous libstdc++.a will be found that crashes! 
+    #LIBPATH=[
+    #    os.path.join(FRAMEWORK_DIR, "lib")
+    #],
 
-    # link lib/libpico.a
-    LIBS=["pico", "m", "c", "stdc++", "c"]
+    # link lib/libpico.a by full path, ignore libstdc++
+    LIBS=[
+        File(os.path.join(FRAMEWORK_DIR, "lib", "libpico.a")), 
+        "m", "c", "stdc++", "c"]
 )
 
 
