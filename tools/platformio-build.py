@@ -19,7 +19,8 @@ env = DefaultEnvironment()
 platform = env.PioPlatform()
 board = env.BoardConfig()
 upload_protocol = env.subst("$UPLOAD_PROTOCOL") or "picotool"
-#ram_size = board.get("upload.maximum_ram_size")
+#ram_size = board.get("upload.maximum_ram_size") # PlatformIO gives 264K here
+# override to correct 256K for RAM section in linkerscript
 ram_size = 256 * 1024 # not the 264K, which is 256K SRAM + 2*4K SCRATCH(X/Y). 
 
 FRAMEWORK_DIR = platform.get_package_dir("framework-arduinopico")

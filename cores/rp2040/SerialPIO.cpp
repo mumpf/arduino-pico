@@ -114,21 +114,25 @@ void __not_in_flash_func(SerialPIO::_handleIRQ)() {
             }
         }
 
-        if ((_writer + 1) % _fifosize != _reader) {
+        auto next_writer = _writer + 1;
+        if (next_writer == _fifoSize) {
+            next_writer = 0;
+        }
+        if (next_writer != _reader) {
             _queue[_writer] = val & ((1 << _bits) -  1);
             asm volatile("" ::: "memory"); // Ensure the queue is written before the written count advances
-            _writer = (_writer + 1) % _fifosize;
+            _writer = next_writer;
         } else {
             // TODO: Overflow
         }
     }
 }
 
-SerialPIO::SerialPIO(pin_size_t tx, pin_size_t rx, size_t fifosize) {
+SerialPIO::SerialPIO(pin_size_t tx, pin_size_t rx, size_t fifoSize) {
     _tx = tx;
     _rx = rx;
-    _fifosize = fifosize + 1; // Always one unused entry
-    _queue = new uint8_t[_fifosize];
+    _fifoSize = fifoSize + 1; // Always one unused entry
+    _queue = new uint8_t[_fifoSize];
     mutex_init(&_mutex);
 }
 
@@ -258,16 +262,10 @@ int SerialPIO::peek() {
         return -1;
     }
     // If there's something in the FIFO now, just peek at it
-    uint32_t start = millis();
-    uint32_t now = millis();
-    while ((now - start) < _timeout) {
-        if (_writer != _reader) {
-            return _queue[_reader];
-        }
-        delay(1);
-        now = millis();
+    if (_writer != _reader) {
+        return _queue[_reader];
     }
-    return -1; // Nothing available before timeout
+    return -1;
 }
 
 int SerialPIO::read() {
@@ -275,18 +273,15 @@ int SerialPIO::read() {
     if (!_running || !m || (_rx == NOPIN)) {
         return -1;
     }
-    uint32_t start = millis();
-    uint32_t now = millis();
-    while ((now - start) < _timeout) {
-        if (_writer != _reader) {
-            auto ret = _queue[_reader];
-            _reader = (_reader + 1) % _fifosize;
-            return ret;
-        }
-        delay(1);
-        now = millis();
+    if (_writer != _reader) {
+        auto ret = _queue[_reader];
+        asm volatile("" ::: "memory"); // Ensure the value is read before advancing
+        auto next_reader = (_reader + 1) % _fifoSize;
+        asm volatile("" ::: "memory"); // Ensure the reader value is only written once, correctly
+        _reader = next_reader;
+        return ret;
     }
-    return -1; // Timeout
+    return -1;
 }
 
 int SerialPIO::available() {
@@ -294,7 +289,7 @@ int SerialPIO::available() {
     if (!_running || !m || (_rx == NOPIN)) {
         return 0;
     }
-    return (_writer - _reader) % _fifosize;
+    return (_writer - _reader) % _fifoSize;
 }
 
 int SerialPIO::availableForWrite() {
