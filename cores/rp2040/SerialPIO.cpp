@@ -36,6 +36,10 @@ static pio_program_t *pio_make_uart_prog(int repl, const pio_program_t *pg) {
     p->length = pg->length;
     p->origin = pg->origin;
     uint16_t *insn = (uint16_t *)malloc(p->length * 2);
+    if (!insn) {
+        delete p;
+        return nullptr;
+    }
     memcpy(insn, pg->instructions, p->length * 2);
     insn[0] = pio_encode_set(pio_x, repl);
     p->instructions = insn;
@@ -238,8 +242,9 @@ void SerialPIO::begin(unsigned long baud, uint16_t config) {
         case 2: pio_set_irq0_source_enabled(_rxPIO, pis_sm2_rx_fifo_not_empty, true); break;
         case 3: pio_set_irq0_source_enabled(_rxPIO, pis_sm3_rx_fifo_not_empty, true); break;
         }
-        irq_set_exclusive_handler(PIO0_IRQ_0, _fifoIRQ);
-        irq_set_enabled(PIO0_IRQ_0, true);
+        auto irqno = pio_get_index(_rxPIO) == 0 ? PIO0_IRQ_0 : PIO1_IRQ_0;
+        irq_set_exclusive_handler(irqno, _fifoIRQ);
+        irq_set_enabled(irqno, true);
 
         pio_sm_set_enabled(_rxPIO, _rxSM, true);
     }

@@ -28,6 +28,7 @@
 
 extern "C" typedef struct uart_inst uart_inst_t;
 
+#define UART_PIN_NOT_DEFINED      (255u)
 class SerialUART : public HardwareSerial {
 public:
     SerialUART(uart_inst_t *uart, pin_size_t tx, pin_size_t rx);
@@ -35,6 +36,8 @@ public:
     // Select the pinout.  Call before .begin()
     bool setRX(pin_size_t pin);
     bool setTX(pin_size_t pin);
+    bool setRTS(pin_size_t pin);
+    bool setCTS(pin_size_t pin);
     bool setPinout(pin_size_t tx, pin_size_t rx) {
         bool ret = setRX(rx);
         ret &= setTX(tx);
@@ -60,12 +63,13 @@ public:
     operator bool() override;
 
     // Not to be called by users, only from the IRQ handler.  In public so that the C-language IQR callback can access it
-    void _handleIRQ();
+    void _handleIRQ(bool inIRQ = true);
 
 private:
     bool _running = false;
     uart_inst_t *_uart;
     pin_size_t _tx, _rx;
+    pin_size_t _rts, _cts;
     int _baud;
     mutex_t _mutex;
     bool _polling = false;
@@ -74,7 +78,9 @@ private:
     uint32_t _writer;
     uint32_t _reader;
     size_t   _fifoSize = 32;
-    uint8_t  *_queue;
+    uint8_t *_queue;
+    mutex_t  _fifoMutex; // Only needed when non-IRQ updates _writer
+    void _pumpFIFO(); // User space FIFO transfer
 };
 
 extern SerialUART Serial1; // HW UART 0

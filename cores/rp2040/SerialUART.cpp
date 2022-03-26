@@ -65,6 +65,39 @@ bool SerialUART::setTX(pin_size_t pin) {
     return false;
 }
 
+bool SerialUART::setRTS(pin_size_t pin) {
+    constexpr uint32_t valid[2] = { __bitset({3, 15, 19}) /* UART0 */,
+                                    __bitset({7, 11, 23, 27})  /* UART1 */
+                                  };
+    if ((!_running) && ((1 << pin) & valid[uart_get_index(_uart)])) {
+        _rts = pin;
+        return true;
+    }
+
+    if (_running) {
+        panic("FATAL: Attempting to set Serial%d.RTS while running", uart_get_index(_uart) + 1);
+    } else {
+        panic("FATAL: Attempting to set Serial%d.RTS to illegal pin %d", uart_get_index(_uart) + 1, pin);
+    }
+    return false;
+}
+
+bool SerialUART::setCTS(pin_size_t pin) {
+    constexpr uint32_t valid[2] = { __bitset({2, 14, 18}) /* UART0 */,
+                                    __bitset({6, 10, 22, 26})  /* UART1 */
+                                  };
+    if ((!_running) && ((1 << pin) & valid[uart_get_index(_uart)])) {
+        _cts = pin;
+        return true;
+    }
+
+    if (_running) {
+        panic("FATAL: Attempting to set Serial%d.CTS while running", uart_get_index(_uart) + 1);
+    } else {
+        panic("FATAL: Attempting to set Serial%d.CTS to illegal pin %d", uart_get_index(_uart) + 1, pin);
+    }
+    return false;
+}
 bool SerialUART::setPollingMode(bool mode) {
     if (_running) {
         return false;
@@ -85,13 +118,19 @@ SerialUART::SerialUART(uart_inst_t *uart, pin_size_t tx, pin_size_t rx) {
     _uart = uart;
     _tx = tx;
     _rx = rx;
+    _rts = UART_PIN_NOT_DEFINED;
+    _cts = UART_PIN_NOT_DEFINED;
     mutex_init(&_mutex);
+    mutex_init(&_fifoMutex);
 }
 
 static void _uart0IRQ();
 static void _uart1IRQ();
 
 void SerialUART::begin(unsigned long baud, uint16_t config) {
+    if (_running) {
+        end();
+    }
     _queue = new uint8_t[_fifoSize];
     _baud = baud;
     uart_init(_uart, baud);
@@ -133,6 +172,13 @@ void SerialUART::begin(unsigned long baud, uint16_t config) {
     uart_set_format(_uart, bits, stop, parity);
     gpio_set_function(_tx, GPIO_FUNC_UART);
     gpio_set_function(_rx, GPIO_FUNC_UART);
+    if (_rts != UART_PIN_NOT_DEFINED) {
+        gpio_set_function(_rts, GPIO_FUNC_UART);
+    }
+    if (_cts != UART_PIN_NOT_DEFINED) {
+        gpio_set_function(_cts, GPIO_FUNC_UART);
+    }
+    uart_set_hw_flow(_uart, _rts != UART_PIN_NOT_DEFINED, _cts != UART_PIN_NOT_DEFINED);
     _writer = 0;
     _reader = 0;
 
@@ -156,6 +202,7 @@ void SerialUART::end() {
     if (!_running) {
         return;
     }
+    _running = false;
     if (!_polling) {
         if (_uart == uart0) {
             irq_set_enabled(UART0_IRQ, false);
@@ -163,9 +210,28 @@ void SerialUART::end() {
             irq_set_enabled(UART1_IRQ, false);
         }
     }
+    // Paranoia - ensure nobody else is using anything here at the same time
+    mutex_enter_blocking(&_mutex);
+    mutex_enter_blocking(&_fifoMutex);
     uart_deinit(_uart);
     delete[] _queue;
-    _running = false;
+    // Reset the mutexes once all is off/cleaned up
+    mutex_exit(&_fifoMutex);
+    mutex_exit(&_mutex);
+}
+
+void SerialUART::_pumpFIFO() {
+    // Use the _fifoMutex to guard against the other core potentially
+    // running the IRQ (since we can't disable their IRQ handler).
+    // We guard against this core by disabling the IRQ handler and
+    // re-enabling if it was previously enabled at the end.
+    auto irqno = (_uart == uart0) ? UART0_IRQ : UART1_IRQ;
+    bool enabled = irq_is_enabled(irqno);
+    irq_set_enabled(irqno, false);
+    mutex_enter_blocking(&_fifoMutex);
+    _handleIRQ(false);
+    mutex_exit(&_fifoMutex);
+    irq_set_enabled(irqno, enabled);
 }
 
 int SerialUART::peek() {
@@ -174,7 +240,9 @@ int SerialUART::peek() {
         return -1;
     }
     if (_polling) {
-        _handleIRQ();
+        _handleIRQ(false);
+    } else {
+        _pumpFIFO();
     }
     if (_writer != _reader) {
         return _queue[_reader];
@@ -188,7 +256,9 @@ int SerialUART::read() {
         return -1;
     }
     if (_polling) {
-        _handleIRQ();
+        _handleIRQ(false);
+    } else {
+        _pumpFIFO();
     }
     if (_writer != _reader) {
         auto ret = _queue[_reader];
@@ -207,7 +277,9 @@ int SerialUART::available() {
         return 0;
     }
     if (_polling) {
-        _handleIRQ();
+        _handleIRQ(false);
+    } else {
+        _pumpFIFO();
     }
     return (_writer - _reader) % _fifoSize;
 }
@@ -218,7 +290,7 @@ int SerialUART::availableForWrite() {
         return 0;
     }
     if (_polling) {
-        _handleIRQ();
+        _handleIRQ(false);
     }
     return (uart_is_writable(_uart)) ? 1 : 0;
 }
@@ -229,7 +301,7 @@ void SerialUART::flush() {
         return;
     }
     if (_polling) {
-        _handleIRQ();
+        _handleIRQ(false);
     }
     uart_tx_wait_blocking(_uart);
 }
@@ -240,7 +312,7 @@ size_t SerialUART::write(uint8_t c) {
         return 0;
     }
     if (_polling) {
-        _handleIRQ();
+        _handleIRQ(false);
     }
     uart_putc_raw(_uart, c);
     return 1;
@@ -252,7 +324,7 @@ size_t SerialUART::write(const uint8_t *p, size_t len) {
         return 0;
     }
     if (_polling) {
-        _handleIRQ();
+        _handleIRQ(false);
     }
     size_t cnt = len;
     while (cnt) {
@@ -283,7 +355,15 @@ void arduino::serialEvent2Run(void) {
 }
 
 // IRQ handler, called when FIFO > 1/8 full or when it had held unread data for >32 bit times
-void __not_in_flash_func(SerialUART::_handleIRQ)() {
+void __not_in_flash_func(SerialUART::_handleIRQ)(bool inIRQ) {
+    if (inIRQ) {
+        uint32_t owner;
+        if (!mutex_try_enter(&_fifoMutex, &owner)) {
+            // Main app on the other core has the mutex so it is
+            // in the process of pulling data out of the HW FIFO
+            return;
+        }
+    }
     // ICR is write-to-clear
     uart_get_hw(_uart)->icr = UART_UARTICR_RTIC_BITS | UART_UARTICR_RXIC_BITS;
     while (uart_is_readable(_uart)) {
@@ -300,6 +380,9 @@ void __not_in_flash_func(SerialUART::_handleIRQ)() {
         } else {
             // TODO: Overflow
         }
+    }
+    if (inIRQ) {
+        mutex_exit(&_fifoMutex);
     }
 }
 
